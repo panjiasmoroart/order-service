@@ -1,18 +1,18 @@
 package error
 
 import (
-	errPayment "payment-service/constants/error/payment"
+	errORder "order-service/constants/error/order"
 )
 
 func ErrMapping(err error) bool {
 	var (
 		GeneralErrors = GeneralErrors
-		TimeErrors    = errPayment.PaymentErrors
+		OrderErrors   = errORder.OrderErrors
 	)
 
 	allErrors := make([]error, 0)
 	allErrors = append(allErrors, GeneralErrors...)
-	allErrors = append(allErrors, TimeErrors...)
+	allErrors = append(allErrors, OrderErrors...)
 
 	for _, item := range allErrors {
 		if err.Error() == item.Error() {
