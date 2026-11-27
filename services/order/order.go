@@ -4,13 +4,20 @@ import (
 	"context"
 	"fmt"
 	"order-service/clients"
-	clientUser "order-service/clients/user"
 	"order-service/common/util"
 	"order-service/constants"
 	"order-service/domain/dto"
 	"order-service/domain/models"
 	"order-service/repositories"
 	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+
+	clientField "order-service/clients/field"
+	clientPayment "order-service/clients/payment"
+	clientUser "order-service/clients/user"
+	errOrder "order-service/constants/error/order"
 )
 
 type OrderService struct {
@@ -121,4 +128,82 @@ func (o *OrderService) GetOrderByUserID(ctx context.Context) ([]dto.OrderByUserI
 		})
 	}
 	return orderLists, nil
+}
+
+func (o *OrderService) Create(ctx context.Context, request *dto.OrderRequest) (*dto.OrderResponse, error) {
+	var (
+		order               *models.Order
+		txErr, err          error
+		user                = ctx.Value(constants.User).(*clientUser.UserData)
+		field               *clientField.FieldData
+		paymentResponse     *clientPayment.PaymentData
+		orderFieldSchedules = make([]models.OrderField, 0, len(request.FieldScheduleIDs))
+		totalAmount         float64
+	)
+
+	for _, fieldID := range request.FieldScheduleIDs {
+		uuidParsed := uuid.MustParse(fieldID)
+		field, err = o.client.GetField().GetFieldByUUID(ctx, uuidParsed)
+		if err != nil {
+			return nil, err
+		}
+
+		totalAmount += field.PricePerHour
+		if field.Status == constants.BookedStatus.String() {
+			return nil, errOrder.ErrFieldAlreadyBooked
+		}
+	}
+
+	err = o.repository.GetTx().Transaction(func(tx *gorm.DB) error {
+		order, txErr := o.repository.GetOrder().Create(ctx, tx, &models.Order{
+			UserID: user.UUID,
+			Amount: totalAmount,
+			Date:   time.Now(),
+			Status: constants.Pending,
+			IsPaid: false,
+		})
+		if txErr != nil {
+			return txErr
+		}
+
+		for _, fieldID := range request.FieldScheduleIDs {
+			uuidParsed := uuid.MustParse(fieldID)
+			orderFieldSchedules = append(orderFieldSchedules, models.OrderField{
+				OrderID:         order.ID,
+				FieldScheduleID: uuidParsed,
+			})
+		}
+
+		txErr = o.repository.GetOrderField().Create(ctx, tx, orderFieldSchedules)
+		if txErr != nil {
+			return txErr
+		}
+
+		txErr = o.repository.GetOrderHistory().Create(ctx, tx, &dto.OrderHistoryRequest{
+			Status:  constants.Pending.GetStatusString(),
+			OrderID: order.ID,
+		})
+		if txErr != nil {
+			return txErr
+		}
+
+		expiredAt := time.Now().Add(1 * time.Hour)
+		description := fmt.Sprintf("Pembayaran Sewa %s", field.FieldName)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	response := dto.OrderResponse{
+		UUID:        order.UUID,
+		Code:        order.Code,
+		UserName:    user.Name,
+		Amount:      order.Amount,
+		Status:      order.Status.GetStatusString(),
+		OrderDate:   order.Date,
+		PaymentLink: paymentResponse.PaymentLink,
+		CreatedAt:   *order.CreatedAt,
+		UpdatedAt:   *order.UpdatedAt,
+	}
+	return &response, nil
 }
