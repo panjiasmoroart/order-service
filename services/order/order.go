@@ -155,7 +155,7 @@ func (o *OrderService) Create(ctx context.Context, request *dto.OrderRequest) (*
 	}
 
 	err = o.repository.GetTx().Transaction(func(tx *gorm.DB) error {
-		order, txErr := o.repository.GetOrder().Create(ctx, tx, &models.Order{
+		order, txErr = o.repository.GetOrder().Create(ctx, tx, &models.Order{
 			UserID: user.UUID,
 			Amount: totalAmount,
 			Date:   time.Now(),
@@ -189,6 +189,37 @@ func (o *OrderService) Create(ctx context.Context, request *dto.OrderRequest) (*
 
 		expiredAt := time.Now().Add(1 * time.Hour)
 		description := fmt.Sprintf("Pembayaran Sewa %s", field.FieldName)
+		paymentResponse, txErr = o.client.GetPayment().CreatePaymentLink(ctx, &dto.PaymentRequest{
+			OrderID:     order.UUID,
+			ExpiredAt:   expiredAt,
+			Amount:      totalAmount,
+			Description: description,
+			CustomerDetail: dto.CustomerDetail{
+				Name:  user.Name,
+				Email: user.Email,
+				Phone: user.PhoneNumber,
+			},
+			ItemDetails: []dto.ItemDetails{
+				{
+					ID:       uuid.New(),
+					Name:     description,
+					Amount:   totalAmount,
+					Quantity: 1,
+				},
+			},
+		})
+		if txErr != nil {
+			return txErr
+		}
+
+		txErr = o.repository.GetOrder().Update(ctx, tx, &models.Order{
+			PaymentID: paymentResponse.UUID,
+		}, order.UUID)
+		if txErr != nil {
+			return txErr
+		}
+
+		return nil
 	})
 	if err != nil {
 		return nil, err
